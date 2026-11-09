@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/journal.db
+data/journal-*.db
+data/invoices.json
+data/policy.json
+data/suppliers.json
+data/history.json
+data/invoices.template.json
+.pytest_cache/
+.DS_Store
