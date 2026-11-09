@@ -118,7 +118,7 @@ class Tools:
         inv = self._get(invoice_id)
         if inv is None:
             return {"error": f"Unknown invoice {invoice_id}"}
-        if inv["status"] not in ("pending", "blocked_by_policy"):
+        if inv["status"] not in ("pending", "blocked_by_policy", "approved_by_cfo"):
             return {"error": f"Invoice {invoice_id} is already {inv['status']}."}
 
         tx = Payment(
@@ -256,12 +256,20 @@ def main() -> None:
                     choices=["auto", "anthropic", "openai", "rules"])
     ap.add_argument("--model", default=os.getenv("LLM_MODEL"))
     ap.add_argument("--max-steps", type=int, default=30)
+    ap.add_argument("--pay", metavar="INVOICE_ID",
+                    help="pay one invoice the CFO approved in the console, print the result as JSON")
     ap.add_argument("--reset", action="store_true",
                     help="demo only: restore invoices, demo limits and an empty journal, then exit")
     args = ap.parse_args()
 
     if args.reset:
         reset_demo()
+        return
+
+    if args.pay:
+        # Still signed by the agent key only: the co-signer applies every limit.
+        out = Tools().pay_invoice(args.pay, "Approved by the CFO in the console.")
+        print(json.dumps(out))
         return
 
     provider = args.provider
