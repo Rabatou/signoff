@@ -10,6 +10,7 @@ Run: uvicorn policy_service:app --port 8000
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from xrpl.core.binarycodec import decode
-from xrpl.models.requests import Tx
+from xrpl.models.requests import Ledger, Tx
 from xrpl.models.transactions.transaction import Transaction
 from xrpl.transaction import multisign, sign, simulate, submit_and_wait
 from xrpl.wallet import Wallet
@@ -32,6 +33,7 @@ from common import (
     need,
     save_json,
     tx_link,
+    verify_multisig_signer,
 )
 from policy_rules import DEFAULT_MAX_FEE_DROPS, evaluate, invoice_hash, parse_amount
 
@@ -62,8 +64,11 @@ def db() -> sqlite3.Connection:
             reasons TEXT,
             justification TEXT,
             tx_hash TEXT,
-            ledger_result TEXT
+            ledger_result TEXT,
+            last_ledger INTEGER         -- LastLedgerSequence: after it, an unseen tx is dead
         )""")
+    if "last_ledger" not in {r[1] for r in conn.execute("PRAGMA table_info(journal)")}:
+        conn.execute("ALTER TABLE journal ADD COLUMN last_ledger INTEGER")  # older journals
     return conn
 
 
@@ -82,17 +87,33 @@ def ledger_outcome(tx_hash: str) -> str | None:
     return None
 
 
+def validated_ledger_index() -> int | None:
+    try:
+        return client.request(Ledger(ledger_index="validated")).result["ledger_index"]
+    except Exception:
+        return None
+
+
 def reconcile() -> None:
-    """Resolve submissions whose outcome was unknown (timeout, crash) against the ledger."""
+    """Resolve submissions whose outcome was unknown (timeout, crash) against the ledger.
+
+    A tx that is not validated once the ledger has passed its LastLedgerSequence
+    can never be: it is marked FAILED so it stops counting against the daily cap.
+    """
     with db() as conn:
         rows = conn.execute(
-            "SELECT id, tx_hash FROM journal WHERE status IN ('SUBMITTING','UNCERTAIN')"
+            "SELECT id, tx_hash, last_ledger FROM journal WHERE status IN ('SUBMITTING','UNCERTAIN')"
         ).fetchall()
+    if not rows:
+        return
+    current = validated_ledger_index()
     for r in rows:
         result = ledger_outcome(r["tx_hash"])
         if result is not None:
             update(r["id"], status="EXECUTED" if result == "tesSUCCESS" else "FAILED",
                    ledger_result=result)
+        elif current and r["last_ledger"] and current > r["last_ledger"]:
+            update(r["id"], status="FAILED", ledger_result="expired (LastLedgerSequence passed)")
 
 
 def invoice_already_paid(invoice_id: str) -> bool:
@@ -114,7 +135,7 @@ def simulation_error(tx: Transaction) -> str | None:
     try:
         result = simulate(tx, client).result.get("engine_result")
     except Exception as exc:
-        code = getattr(exc, "args", [{}])[0]
+        code = exc.args[0] if exc.args else None
         result = code.get("engine_result") if isinstance(code, dict) else None
         if result is None:
             return None
@@ -173,7 +194,7 @@ class PolicyUpdate(BaseModel):
 
 
 def check_admin(token: str | None) -> None:
-    if token != ADMIN_TOKEN:
+    if not token or not secrets.compare_digest(token, ADMIN_TOKEN):
         raise HTTPException(401, "Operator token required.")
 
 
@@ -245,6 +266,8 @@ def cosign(req: CosignRequest):
             "invoice_hash": invoice_hash(req.invoice_id),
             "invoice_already_paid": invoice_already_paid(req.invoice_id),
         })
+        if not verify_multisig_signer(decoded, AGENT_ADDRESS):
+            violations.append("Agent signature is missing or invalid.")
         unsigned = Transaction.from_xrpl({k: v for k, v in decoded.items() if k != "Signers"})
         if not violations:
             sim = simulation_error(unsigned)
@@ -265,7 +288,7 @@ def cosign(req: CosignRequest):
         # Record the hash BEFORE submitting, so a crash can be reconciled.
         row = log(invoice_id=req.invoice_id, destination=decoded.get("Destination"), amount=amount,
                   decision="APPROVED", status="SUBMITTING", justification=req.justification,
-                  tx_hash=tx_hash)
+                  tx_hash=tx_hash, last_ledger=decoded.get("LastLedgerSequence"))
         try:
             resp = submit_and_wait(full, client)
             result = resp.result["meta"]["TransactionResult"]

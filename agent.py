@@ -244,7 +244,9 @@ def reset_demo() -> None:
         journal.rename(archive)
         print(f"Journal archived to {archive.name}.")
     policy = load_json("policy.json", {})
-    policy.update(paused=False, per_tx_max="2000", daily_max="8000", updated_by="demo reset")
+    suppliers = load_json("suppliers.json", {})
+    policy.update(paused=False, per_tx_max="2000", daily_max="8000", updated_by="demo reset",
+                  allowlist={info["address"]: name for name, info in suppliers.items()})
     policy.pop("updated_at", None)
     save_json("policy.json", policy)
     print("Demo reset: invoices pending, limits 2000 / 8000, empty journal.")

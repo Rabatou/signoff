@@ -12,3 +12,4 @@ data/history.json
 data/invoices.template.json
 .pytest_cache/
 .DS_Store
+.streamlit/secrets.toml

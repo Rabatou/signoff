@@ -106,6 +106,32 @@ def agent_memo(action: str, task_id: str, session_id: str, **extra):
                 memo_format=str_to_hex("application/json"))
 
 
+def verify_multisig_signer(decoded: dict, expected_address: str) -> bool:
+    """True if the decoded tx carries exactly one valid multisig signature from expected_address.
+
+    The Signers array is self-declared by whoever built the blob, so the
+    co-signer must check the cryptography, not just the Account field.
+    """
+    from xrpl.core.binarycodec import encode_for_multisigning
+    from xrpl.core.keypairs import derive_classic_address, is_valid_message
+
+    signers = decoded.get("Signers") or []
+    if len(signers) != 1:
+        return False
+    signer = signers[0].get("Signer", {})
+    try:
+        if signer.get("Account") != expected_address:
+            return False
+        if derive_classic_address(signer["SigningPubKey"]) != expected_address:
+            return False
+        message = encode_for_multisigning({k: v for k, v in decoded.items() if k != "Signers"},
+                                          expected_address)
+        return is_valid_message(bytes.fromhex(message), bytes.fromhex(signer["TxnSignature"]),
+                                signer["SigningPubKey"])
+    except Exception:
+        return False
+
+
 def load_json(name: str, default=None):
     path = DATA / name
     if not path.exists():

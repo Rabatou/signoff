@@ -3,7 +3,7 @@ fastapi>=0.110
 uvicorn>=0.29
 httpx>=0.27
 python-dotenv>=1.0
-streamlit>=1.35
+streamlit>=1.47
 mcp>=1.2          # MCP server: plug any MCP client (Claude Desktop, Cursor...) in as the agent
 # LLM providers (install the one you use; the agent also runs without any)
 anthropic>=0.40
